@@ -22,6 +22,11 @@ def ratio_calc(value_1, value_2):
     return ratio
 
 
+def resize_image(image, w, h):
+    height, width = image.shape[:2]
+    res = cv2.resize(image, (w, h), interpolation=cv2.INTER_CUBIC)
+    return res
+
 def biggest_contour(contours):
     result_area = 0
     output = None
@@ -40,7 +45,35 @@ def sum_of_contouts_area(contours):
     return area
 
 
-def geotag_finder(path_to_picture, ratio_square=0.2, ratio_area=0.5, settings=False):
+def warp_affine_without_crop(img, angle):
+    (h, w) = img.shape
+    img_center = (w / 2, h / 2)
+    m = cv2.getRotationMatrix2D(img_center, angle, 1)
+    abs_cos = abs(m[0, 0])
+    abs_sin = abs(m[0, 1])
+
+    bound_w = int(h * abs_sin + w * abs_cos)
+    bound_h = int(h * abs_cos + w * abs_sin)
+
+    m[0, 2] += bound_w/2 - img_center[0]
+    m[1, 2] += bound_h/2 - img_center[1]
+
+    img_rot = cv2.warpAffine(img, m, (bound_w, bound_h))
+    return img_rot
+
+
+def img_crop(img, pts):
+    xs = [i[0] for i in pts]
+    ys = [i[1] for i in pts]
+    x1 = min(xs)
+    x2 = max(xs)
+    y1 = min(ys)
+    y2 = max(ys)
+    img = img[y1:y2, x1:x2]
+    return img
+
+
+def geotag_finder(path_to_picture, ratio_square=0.5, ratio_area=0.5, settings=False):
     stop_flag = True
     success = True
     resize_coeff = 0.3
@@ -140,53 +173,43 @@ def geotag_finder(path_to_picture, ratio_square=0.2, ratio_area=0.5, settings=Fa
                         _, cand_roi_thresh = cv2.threshold(cand_roi, 200, 255, 0)
                         contour_cand, _ = cv2.findContours(cand_roi_thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-                        # cv2.imshow('cand_roi', cand_roi_thresh)
-                        # while True:
-                        #     key = cv2.waitKey(20)
-                        #     if key == ord('n'):
-                        #         cv2.destroyWindow('cand_roi')
-                        #         break
                         if contour_cand:
                             cnt_cand = biggest_contour(contour_cand)
                             cnt_cand_rect = cv2.minAreaRect(cnt_cand)
                             rect_box = np.int0(cv2.boxPoints(cnt_cand_rect))
                             if cv2.arcLength(cnt_cand, True) >= cv2.arcLength(rect_box, True):
                                 cnt_cand_rect_angle = cnt_cand_rect[2]
-                                (h, w) = cand_roi_thresh.shape
-                                m = cv2.getRotationMatrix2D((w/2, h/2), cnt_cand_rect_angle, 1)
-                                cand_roi_thresh_rotated = cv2.warpAffine(cand_roi_thresh, m, (w, h))
+                                cand_roi_thresh_rotated = warp_affine_without_crop(cand_roi_thresh, cnt_cand_rect_angle)
+                                _, cand_roi_thresh_rotated = cv2.threshold(cand_roi_thresh_rotated, 200, 255, 0)
                                 contour_cand_rot, _ = cv2.findContours(cand_roi_thresh_rotated, cv2.RETR_TREE,
                                                                        cv2.CHAIN_APPROX_SIMPLE)
                                 if contour_cand_rot:
                                     cnt_cand_rot = biggest_contour(contour_cand_rot)
                                     cnt_cand_rect_rot = cv2.minAreaRect(cnt_cand_rot)
                                     rect_box_rot = np.int0(cv2.boxPoints(cnt_cand_rect_rot))
-                                    cnt_cand_rect_rot_center_x = cnt_cand_rect_rot[0][0]
-                                    cnt_cand_rect_rot_center_y = cnt_cand_rect_rot[0][1]
                                     cnt_cand_rect_rot_w = int(cnt_cand_rect_rot[1][0])
                                     cnt_cand_rect_rot_h = int(cnt_cand_rect_rot[1][1])
-                                    cnt_cand_rect_rot_x_l = int(cnt_cand_rect_rot_center_y-cnt_cand_rect_rot_h/2)
-                                    cnt_cand_rect_rot_x_h = int(cnt_cand_rect_rot_center_y+cnt_cand_rect_rot_h/2)
-                                    cnt_cand_rect_rot_y_l = int(cnt_cand_rect_rot_center_x-cnt_cand_rect_rot_w/2)
-                                    cnt_cand_rect_rot_y_h = int(cnt_cand_rect_rot_center_x+cnt_cand_rect_rot_w/2)
-                                    cand_roi_thresh_rotated = cand_roi_thresh_rotated[cnt_cand_rect_rot_x_l:
-                                                                                      cnt_cand_rect_rot_x_h,
-                                                                                      cnt_cand_rect_rot_y_l:
-                                                                                      cnt_cand_rect_rot_y_h]
-                                    (mask_h, mask_w) = cand_roi_thresh_rotated.shape
-                                    _, cand_roi_thresh_rotated = cv2.threshold(cand_roi_thresh_rotated, 200, 255, 0)
-
+                                    cand_roi_thresh_rotated = img_crop(cand_roi_thresh_rotated, rect_box_rot)
                                     if cand_roi_thresh_rotated is not None:
                                         if cnt_cand_rect_rot_w >= 7 and cnt_cand_rect_rot_h >= 7:
+                                            cand_roi_thresh_rotated = resize_image(cand_roi_thresh_rotated, 100, 100)
+                                            (mask_h, mask_w) = cand_roi_thresh_rotated.shape
+                                            _, cand_roi_thresh_rotated = cv2.threshold(cand_roi_thresh_rotated, 200,
+                                                                                       255, 0)
+                                            cv2.imshow('cand_rot_test', cand_roi_thresh_rotated)
+                                            while True:
+                                                key = cv2.waitKey(20)
+                                                if key == ord('n'):
+                                                    cv2.destroyWindow('cand_rot_test')
+                                                    break
                                             cand_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
-                                            mask_poly_1 = np.array([[0, 0], [cnt_cand_rect_rot_w, 0], [cnt_cand_rect_rot_w/2, cnt_cand_rect_rot_h/2]],dtype=np.int32)
-                                            mask_poly_2 = np.array([[0, cnt_cand_rect_rot_h], [cnt_cand_rect_rot_w, cnt_cand_rect_rot_h], [cnt_cand_rect_rot_w/2, cnt_cand_rect_rot_h/2]],dtype=np.int32)
+                                            mask_poly_1 = np.array([[0, 0], [mask_h, 0], [mask_w/2, mask_h/2]],dtype=np.int32)
+                                            mask_poly_2 = np.array([[0, mask_h], [mask_w, mask_h], [mask_w/2, mask_h/2]],dtype=np.int32)
                                             cv2.fillPoly(cand_mask, [mask_poly_1], (255, 255, 255))
                                             cv2.fillPoly(cand_mask, [mask_poly_2], (255, 255, 255))
                                             cand_mask_inv = cv2.bitwise_not(cand_mask)
                                             xor = cv2.bitwise_xor(cand_roi_thresh_rotated, cand_mask)
                                             xor_inv = cv2.bitwise_xor(cand_roi_thresh_rotated, cand_mask_inv)
-                                            #print(xor_inv)
                                             cand_mask_contours_area = cv2.countNonZero(cand_mask)
                                             xor_area = cv2.countNonZero(xor)
                                             xor_inv_area = cv2.countNonZero(xor_inv)
@@ -197,10 +220,7 @@ def geotag_finder(path_to_picture, ratio_square=0.2, ratio_area=0.5, settings=Fa
                                             print(cand_mask_contours_area)
                                             print(xor_area)
                                             print(xor_inv_area)
-                                            cv2.imshow('cand_rot', cand_roi_thresh_rotated)
-                                            cv2.imshow('xor', xor)
-                                            cv2.imshow('xor_inv', xor_inv)
-                                            if (cand_mask_contours_area > xor_inv_area and ratio_inv >= 0.6 and ratio < 0.6) or (cand_mask_contours_area > xor_area and ratio >= 0.6 and ratio_inv < 0.6):
+                                            if (cand_mask_contours_area > xor_inv_area and ratio_inv >= 0.5 and ratio < 0.6) or (cand_mask_contours_area > xor_area and ratio >= 0.5 and ratio_inv < 0.6):
                                                 xor = cv2.cvtColor(xor, cv2.COLOR_GRAY2BGR)
                                                 cand_roi_thresh = cv2.cvtColor(cand_roi_thresh, cv2.COLOR_GRAY2BGR)
                                                 cv2.drawContours(cand_roi_thresh, cnt_cand_rot, -1, (0, 255, 0), 1)
@@ -211,10 +231,10 @@ def geotag_finder(path_to_picture, ratio_square=0.2, ratio_area=0.5, settings=Fa
                                                 cv2.line(img, (x_coord, 0), (x_coord, y_coord), (0, 0, 255), 3)
                                                 coords = (x_coord, y_coord)
                                                 if settings:
-                                                    cv2.imshow('cand', cand_roi_thresh)
                                                     cv2.imshow('cand_rot', cand_roi_thresh_rotated)
                                                     cv2.imshow('cand_mask', cand_mask)
                                                     cv2.imshow('xor', xor)
+                                                    cv2.imshow('xor_inv', xor_inv)
                                                 else:
                                                     return img, success, coords
         cv2.waitKey(20)
@@ -226,12 +246,12 @@ def geotag_finder(path_to_picture, ratio_square=0.2, ratio_area=0.5, settings=Fa
 
 
 if __name__ == "__main__":
-    # cwd = os.getcwd()
-    # directory = os.path.join(cwd, "result")
-    # if not os.path.isdir(directory):
-    #     os.makedirs(directory)
-    #
-    # path = os.path.join(os.getcwd(), "Photos")
+    cwd = os.getcwd()
+    directory = os.path.join(cwd, "result")
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+
+    # path = os.path.join(os.getcwd(), "Photos_spring")
     # photos = os.listdir(path)
     # i = 0
     # for pht in photos:
@@ -253,7 +273,7 @@ if __name__ == "__main__":
     #
     #     else:
     #         print('nothing')
-    path = os.path.join(os.getcwd(), "test.JPEG")
+    path = os.path.join(os.getcwd(), "test11.JPEG")
     image_and_coordinates = geotag_finder(path, settings=True)
 
 
